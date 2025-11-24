@@ -67,6 +67,7 @@ def apply_diff(
 
         # Find where the search pattern starts in the original code
         for i in range(len(result_lines) - len(search_lines) + 1):
+            current_result_lines = result_lines[i : i + len(search_lines)]
             if result_lines[i : i + len(search_lines)] == search_lines:
                 # Replace the matched section
                 result_lines[i : i + len(search_lines)] = replace_lines
