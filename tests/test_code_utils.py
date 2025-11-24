@@ -99,12 +99,12 @@ Here's the suggested improvement:
     best_x = 0
     best_y = 0
     best_value = evaluate_function(best_x, best_y)
-    
+
     for _ in range(iterations):
         x = best_x + 1
         y = best_y - 1
         value = evaluate_function(x, y)
-        
+
         if value < best_value:
             best_value = value
             best_x, best_y = x, y
