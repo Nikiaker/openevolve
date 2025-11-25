@@ -37,6 +37,57 @@ def parse_evolve_blocks(code: str) -> List[Tuple[int, int, str]]:
     return blocks
 
 
+def get_code_lines(code: str) -> list[str]:
+    """
+    Split code into lines
+
+    Args:
+        code: Source code
+
+    Returns:
+        List of code lines
+    """
+    code_lines = code.split("\n")
+    # Remove trailing spaces from each line
+    code_lines = [line.rstrip() for line in code_lines]
+    return code_lines
+
+def remove_indentation(lines: list[str]) -> Tuple[List[str], int]:
+    """
+    Remove common indentation from code
+
+    Args:
+        code: Source code
+
+    Returns:
+        Code with common indentation removed
+    """
+    # Find minimum indentation
+    indent_levels = [
+        len(re.match(r"^( *)", line).group(1)) for line in lines if line.strip()
+    ]
+    if not indent_levels:
+        return lines, 0
+    min_indent = min(indent_levels)
+
+    # Remove common indentation
+    unindented_lines = [line[min_indent:] if len(line) >= min_indent else line for line in lines]
+    return unindented_lines, min_indent
+
+def add_indentation(lines: list[str], indent: int) -> list[str]:
+    """
+    Add indentation to code
+
+    Args:
+        code: Source code
+        indent: Number of spaces to add
+
+    Returns:
+        Indented code
+    """
+    indented_lines = [(" " * indent) + line if line.strip() else line for line in lines]
+    return indented_lines
+
 def apply_diff(
     original_code: str,
     diff_text: str,
@@ -54,7 +105,7 @@ def apply_diff(
         Modified code
     """
     # Split into lines for easier processing
-    original_lines = original_code.split("\n")
+    original_lines = get_code_lines(original_code)
     result_lines = original_lines.copy()
 
     # Extract diff blocks
@@ -62,15 +113,19 @@ def apply_diff(
 
     # Apply each diff block
     for search_text, replace_text in diff_blocks:
-        search_lines = search_text.split("\n")
-        replace_lines = replace_text.split("\n")
+        search_lines = get_code_lines(search_text)
+        replace_lines = get_code_lines(replace_text)
+        unindented_search_lines, _ = remove_indentation(search_lines)
+        unindented_replace_lines, _ = remove_indentation(replace_lines)
 
         # Find where the search pattern starts in the original code
         for i in range(len(result_lines) - len(search_lines) + 1):
-            current_result_lines = result_lines[i : i + len(search_lines)]
-            if result_lines[i : i + len(search_lines)] == search_lines:
+            current_original_lines = result_lines[i : i + len(search_lines)].copy()
+            unindented_original_lines, min_indent = remove_indentation(current_original_lines)
+            if unindented_original_lines == unindented_search_lines:
+                indented_replace_lines = add_indentation(unindented_replace_lines, min_indent)
                 # Replace the matched section
-                result_lines[i : i + len(search_lines)] = replace_lines
+                result_lines[i : i + len(search_lines)] = indented_replace_lines
                 break
 
     return "\n".join(result_lines)
