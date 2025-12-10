@@ -206,8 +206,27 @@ def _run_iteration_worker(
 
             diff_blocks = extract_diffs(llm_response, _worker_config.diff_pattern)
             if not diff_blocks:
+                # Create child program
+                child_program = Program(
+                    id=str(uuid.uuid4()),
+                    code=parent.code,
+                    parent_id=parent.id,
+                    generation=parent.generation + 1,
+                    iteration_found=iteration,
+                    metadata={
+                        "parent_metrics": parent.metrics,
+                        "island": parent_island,
+                    },
+                )
+
                 return SerializableResult(
-                    error=f"No valid diffs found in response", iteration=iteration
+                    child_program_dict=child_program.to_dict(),
+                    parent_id=parent.id,
+                    prompt=prompt,
+                    llm_response=llm_response,
+                    artifacts={"no_valid_diffs": "No valid diffs found in response"},
+                    iteration=iteration,
+                    error=f"No valid diffs found in response"
                 )
 
             child_code = apply_diff(parent.code, llm_response, _worker_config.diff_pattern)
@@ -483,7 +502,7 @@ class ProcessParallelController:
                 timeout_seconds = self.config.evaluator.timeout + 30
                 result = future.result(timeout=timeout_seconds)
 
-                if result.error:
+                if result.error and result.child_program_dict is None:
                     logger.warning(f"Iteration {completed_iteration} error: {result.error}")
                 elif result.child_program_dict:
                     # Reconstruct program from dict

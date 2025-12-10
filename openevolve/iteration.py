@@ -88,7 +88,14 @@ async def run_iteration_with_shared_db(
 
             if not diff_blocks:
                 logger.warning(f"Iteration {iteration+1}: No valid diffs found in response")
-                return None
+                result.child_program = Program(
+                    id=str(uuid.uuid4()),
+                    code=parent.code)
+                result.prompt = prompt
+                result.llm_response = llm_response
+                result.artifacts = {"no_valid_diffs": "No valid diffs found in response"}
+
+                return result
 
             # Apply the diffs
             child_code = apply_diff(parent.code, llm_response, config.diff_pattern)
