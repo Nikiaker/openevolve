@@ -205,6 +205,7 @@ def _run_iteration_worker(
 
             diff_blocks = extract_diffs(llm_response)
             if not diff_blocks:
+                import uuid
                 # Create child program
                 child_program = Program(
                     id=str(uuid.uuid4()),
