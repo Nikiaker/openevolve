@@ -202,9 +202,28 @@ def _run_iteration_worker(
 
         # Parse response based on evolution mode
         if _worker_config.diff_based_evolution:
-            from openevolve.utils.code_utils import apply_diff, extract_diffs, format_diff_summary
+            from openevolve.utils.code_utils import extract_diffs, apply_diff, format_diff_summary, get_fix_diff_response_prompt
 
             diff_blocks = extract_diffs(llm_response, _worker_config.diff_pattern)
+            retries = 0
+            wrong_llm_responses: list[str] = []
+            while not diff_blocks and retries < 3:
+                wrong_llm_responses.append(llm_response)
+                retries += 1
+                fix_prompt = get_fix_diff_response_prompt(llm_response)
+                # Generate code fix (sync wrapper for async)
+                try:
+                    llm_response = asyncio.run(
+                        _worker_llm_ensemble.generate_with_context(
+                            system_message=fix_prompt["system"],
+                            messages=[{"role": "user", "content": fix_prompt["user"]}],
+                        )
+                    )
+                    diff_blocks = extract_diffs(llm_response, _worker_config.diff_pattern)
+                except Exception as e:
+                    logger.error(f"LLM generation failed: {e}")
+                    return SerializableResult(error=f"LLM generation failed: {str(e)}", iteration=iteration)
+            
             if not diff_blocks:
                 import uuid
                 # Create child program
@@ -224,7 +243,7 @@ def _run_iteration_worker(
                     child_program_dict=child_program.to_dict(),
                     parent_id=parent.id,
                     prompt=prompt,
-                    llm_response=llm_response,
+                    llm_response="\n==========\n".join(wrong_llm_responses),
                     artifacts={"no_valid_diffs": "No valid diffs found in response"},
                     iteration=iteration,
                     error=f"No valid diffs found in response"

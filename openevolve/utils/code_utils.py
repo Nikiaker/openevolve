@@ -268,3 +268,16 @@ def extract_code_language(code: str) -> str:
         return "sql"
 
     return "unknown"
+
+def get_fix_diff_response_prompt(llm_response: str):
+    return {
+        "system": """You are an expert in fixing your collegues code. You know that the code should be in format:
+<<<<<<< SEARCH
+# Original code to find and replace (must match exactly, indentations and endlines as well)
+=======
+# New replacement code
+>>>>>>> REPLACE
+Provided the incorrect format of SEARCH/REPLACE fix it to a correct format.
+        """,
+        "user": f"An incorrect diff format was detected in this change:\n{llm_response}\nPlease fix it to the correct format."
+    }
