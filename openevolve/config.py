@@ -239,6 +239,7 @@ class PromptConfig:
     # Number of examples to include in the prompt
     num_top_programs: int = 3
     num_diverse_programs: int = 2
+    num_inspirations: int = 2
 
     # Template stochasticity
     use_template_stochasticity: bool = True

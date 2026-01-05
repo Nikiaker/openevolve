@@ -239,6 +239,8 @@ def _run_iteration_worker(
                     },
                 )
 
+                logger.error(f"LLM generation failed: No valid diffs found in response after 3 attempts")
+
                 return SerializableResult(
                     child_program_dict=child_program.to_dict(),
                     parent_id=parent.id,
@@ -522,7 +524,7 @@ class ProcessParallelController:
                 timeout_seconds = self.config.evaluator.timeout + 30
                 result = future.result(timeout=timeout_seconds)
 
-                if result.error and result.child_program_dict is None:
+                if result.error:
                     logger.warning(f"Iteration {completed_iteration} error: {result.error}")
                 elif result.child_program_dict:
                     # Reconstruct program from dict
@@ -758,7 +760,7 @@ class ProcessParallelController:
             # Use thread-safe sampling that doesn't modify shared state
             # This fixes the race condition from GitHub issue #246
             parent, inspirations = self.database.sample_from_island(
-                island_id=target_island, num_inspirations=self.config.prompt.num_top_programs
+                island_id=target_island, num_inspirations=self.config.prompt.num_inspirations
             )
 
             # Create database snapshot
