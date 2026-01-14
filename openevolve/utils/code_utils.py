@@ -281,3 +281,10 @@ Provided the incorrect format of SEARCH/REPLACE fix it to a correct format.
         """,
         "user": f"An incorrect diff format was detected in this change:\n{llm_response}\nPlease fix it to the correct format."
     }
+
+def get_fix_no_diff_applied_prompt(parent_code: str, llm_response: str):
+    return {
+        "system": """You are an expert in fixing your collegues code. You know that in order for the SEARCH/REPLACE diff to be correct, the SEARCH section must EXACTLY match a part of the original code. That includes indentations and endlines as well. Every character matters. The provided code in the SEARCH section DOES NOT match excatly the original code. Your task is to modify the SEARCH section so that it matches EXACTLY the searched part of the original code. Make sure to keep the REPLACE section unchanged.
+        """,
+        "user": f"The provided diff did not apply any changes to the original code:\n{llm_response}\nGiven the original code please modify the SEARCH section to ensure it matches exactly the searched part of the original code: \n{parent_code}"
+    }

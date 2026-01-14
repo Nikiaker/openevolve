@@ -185,85 +185,96 @@ def _run_iteration_worker(
         iteration_start = time.time()
 
         # Generate code modification (sync wrapper for async)
-        try:
-            llm_response = asyncio.run(
-                _worker_llm_ensemble.generate_with_context(
-                    system_message=prompt["system"],
-                    messages=[{"role": "user", "content": prompt["user"]}],
-                )
-            )
-        except Exception as e:
-            logger.error(f"LLM generation failed: {e}")
-            return SerializableResult(error=f"LLM generation failed: {str(e)}", iteration=iteration)
+        diff_blocks = []
+        retries = 0
+        wrong_llm_responses: list[str] = []
+        no_diff_applied = True
 
-        # Check for None response
-        if llm_response is None:
-            return SerializableResult(error="LLM returned None response", iteration=iteration)
-
-        # Parse response based on evolution mode
-        if _worker_config.diff_based_evolution:
-            from openevolve.utils.code_utils import extract_diffs, apply_diff, format_diff_summary, get_fix_diff_response_prompt
-
-            diff_blocks = extract_diffs(llm_response, _worker_config.diff_pattern)
-            retries = 0
-            wrong_llm_responses: list[str] = []
-            while not diff_blocks and retries < 3:
-                wrong_llm_responses.append(llm_response)
-                retries += 1
-                fix_prompt = get_fix_diff_response_prompt(llm_response)
-                # Generate code fix (sync wrapper for async)
-                try:
-                    llm_response = asyncio.run(
-                        _worker_llm_ensemble.generate_with_context(
-                            system_message=fix_prompt["system"],
-                            messages=[{"role": "user", "content": fix_prompt["user"]}],
-                        )
+        while not diff_blocks and no_diff_applied and retries < 4:
+            try:
+                llm_response = asyncio.run(
+                    _worker_llm_ensemble.generate_with_context(
+                        system_message=prompt["system"],
+                        messages=[{"role": "user", "content": prompt["user"]}],
                     )
-                    diff_blocks = extract_diffs(llm_response, _worker_config.diff_pattern)
-                except Exception as e:
-                    logger.error(f"LLM generation failed: {e}")
-                    return SerializableResult(error=f"LLM generation failed: {str(e)}", iteration=iteration)
-            
-            if not diff_blocks:
-                import uuid
-                # Create child program
-                child_program = Program(
-                    id=str(uuid.uuid4()),
-                    code=parent.code,
-                    parent_id=parent.id,
-                    generation=parent.generation + 1,
-                    iteration_found=iteration,
-                    metadata={
-                        "parent_metrics": parent.metrics,
-                        "island": parent_island,
-                    },
                 )
+            except Exception as e:
+                logger.error(f"LLM generation failed: {e}")
+                return SerializableResult(error=f"LLM generation failed: {str(e)}", iteration=iteration)
 
-                logger.error(f"LLM generation failed: No valid diffs found in response after 3 attempts")
+            # Check for None response
+            if llm_response is None:
+                return SerializableResult(error="LLM returned None response", iteration=iteration)
 
-                return SerializableResult(
-                    child_program_dict=child_program.to_dict(),
-                    parent_id=parent.id,
-                    prompt=prompt,
-                    llm_response="\n==========\n".join(wrong_llm_responses),
-                    artifacts={"no_valid_diffs": "No valid diffs found in response"},
-                    iteration=iteration,
-                    error=f"No valid diffs found in response"
-                )
+            # Parse response based on evolution mode
+            if _worker_config.diff_based_evolution:
+                from openevolve.utils.code_utils import extract_diffs, apply_diff, format_diff_summary, get_fix_diff_response_prompt, get_fix_no_diff_applied_prompt
 
-            child_code = apply_diff(parent.code, llm_response, _worker_config.diff_pattern)
-            changes_summary = format_diff_summary(diff_blocks)
-        else:
-            from openevolve.utils.code_utils import parse_full_rewrite
+                diff_blocks = extract_diffs(llm_response, _worker_config.diff_pattern)
+                if not diff_blocks:
+                    wrong_llm_responses.append(llm_response)
+                    retries += 1
+                    prompt = get_fix_diff_response_prompt(llm_response)
+                    # Retry with new prompt
+                    continue
 
-            new_code = parse_full_rewrite(llm_response, _worker_config.language)
-            if not new_code:
-                return SerializableResult(
-                    error=f"No valid code found in response", iteration=iteration
-                )
+                child_code = apply_diff(parent.code, llm_response, _worker_config.diff_pattern)
 
-            child_code = new_code
-            changes_summary = "Full rewrite"
+                # Check whether any difference was actually applied
+                no_diff_applied = (child_code == parent.code)
+                if no_diff_applied:
+                    wrong_llm_responses.append(llm_response)
+                    retries += 1
+                    prompt = get_fix_no_diff_applied_prompt(parent.code, llm_response)
+                    # Retry with new prompt
+                    continue
+
+                changes_summary = format_diff_summary(diff_blocks)
+            else:
+                # The above changes will not work for full rewrites
+                from openevolve.utils.code_utils import parse_full_rewrite
+
+                new_code = parse_full_rewrite(llm_response, _worker_config.language)
+                if not new_code:
+                    return SerializableResult(
+                        error=f"No valid code found in response", iteration=iteration
+                    )
+
+                child_code = new_code
+                changes_summary = "Full rewrite"
+
+        if not diff_blocks:
+            import uuid
+            # Create child program
+            child_program = Program(
+                id=str(uuid.uuid4()),
+                code=parent.code,
+                parent_id=parent.id,
+                generation=parent.generation + 1,
+                iteration_found=iteration,
+                metadata={
+                    "parent_metrics": parent.metrics,
+                    "island": parent_island,
+                },
+            )
+
+            logger.error(f"LLM generation failed: No valid diffs found in response after 3 attempts")
+
+            return SerializableResult(
+                child_program_dict=child_program.to_dict(),
+                parent_id=parent.id,
+                prompt=prompt,
+                llm_response="\n==========\n".join(wrong_llm_responses),
+                artifacts={"no_valid_diffs": "No valid diffs found in response"},
+                iteration=iteration,
+                error=f"No valid diffs found in response"
+            )
+
+        if no_diff_applied:
+            return SerializableResult(
+                error="LLM generated code is identical to parent code (no changes applied)",
+                iteration=iteration,
+            )
 
         # Check code length
         if len(child_code) > _worker_config.max_code_length:
@@ -499,6 +510,8 @@ class ProcessParallelController:
         else:
             logger.info("Early stopping disabled")
 
+        created_programs = 0
+        failed_programs = 0
         # Process results as they complete
         while (
             pending_futures
@@ -526,7 +539,9 @@ class ProcessParallelController:
 
                 if result.error:
                     logger.warning(f"Iteration {completed_iteration} error: {result.error}")
+                    failed_programs += 1
                 elif result.child_program_dict:
+                    created_programs += 1
                     # Reconstruct program from dict
                     child_program = Program(**result.child_program_dict)
 
@@ -746,6 +761,9 @@ class ProcessParallelController:
             logger.info("✅ Evolution completed - Shutdown requested")
         else:
             logger.info("✅ Evolution completed - Maximum iterations reached")
+
+        logger.info(f"Total programs created: {created_programs}")
+        logger.info(f"Total failed program generations: {failed_programs}")
 
         return self.database.get_best_program()
 
