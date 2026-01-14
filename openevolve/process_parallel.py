@@ -242,8 +242,9 @@ def _run_iteration_worker(
 
                 child_code = new_code
                 changes_summary = "Full rewrite"
+                break
 
-        if not diff_blocks:
+        if not diff_blocks and _worker_config.diff_based_evolution:
             import uuid
             # Create child program
             child_program = Program(
@@ -270,7 +271,7 @@ def _run_iteration_worker(
                 error=f"No valid diffs found in response"
             )
 
-        if no_diff_applied:
+        if no_diff_applied and _worker_config.diff_based_evolution:
             return SerializableResult(
                 error="LLM generated code is identical to parent code (no changes applied)",
                 iteration=iteration,
