@@ -387,7 +387,7 @@ class ProgramDatabase:
         return parent, inspirations
 
     def sample_from_island(
-        self, island_id: int, num_inspirations: Optional[int] = None
+        self, island_id: int, num_inspirations: Optional[int] = None, roulette_selection: bool = True
     ) -> Tuple[Program, List[Program]]:
         """
         Sample a program and inspirations from a specific island without modifying current_island
@@ -420,7 +420,10 @@ class ProgramDatabase:
         # This matches the logic in _sample_parent() for consistent behavior
         rand_val = random.random()
 
-        if rand_val < self.config.exploration_ratio:
+        if roulette_selection:
+            parent = self._sample_from_island_roulette(island_id)
+            sampling_mode = "roulette"
+        elif rand_val < self.config.exploration_ratio:
             # EXPLORATION: Sample randomly from island (diverse sampling)
             parent = self._sample_from_island_random(island_id)
             sampling_mode = "exploration"
@@ -440,7 +443,10 @@ class ProgramDatabase:
         # Get other programs from the island for inspirations
         other_programs = [pid for pid in island_programs if pid != parent.id]
 
-        if len(other_programs) < num_inspirations:
+        if roulette_selection:
+            # choose programs randomly based on softmax from the rest of the programs
+            inspiration_ids = self._sample_inspirations_roulette(island_id, other_programs, num_inspirations)
+        elif len(other_programs) < num_inspirations:
             # Not enough programs in island, use what we have
             inspiration_ids = other_programs
         else:
@@ -1456,6 +1462,128 @@ class ProgramDatabase:
                 # Sample parent based on weights
                 parent = random.choices(island_program_objects, weights=weights, k=1)[0]
                 parent_id = parent.id
+
+        parent = self.programs.get(parent_id)
+        if not parent:
+            # Should not happen, but handle gracefully
+            logger.error(f"Parent program {parent_id} not found in database")
+            return self._sample_random_parent()
+
+        return parent
+
+    def _sample_inspirations_roulette(self, island_id: int, island_programs: list[str], n: int = 5) -> List[str]:
+        """
+        Sample inspiration programs from a specific island using roulette wheel selection
+
+        Args:
+            island_id: The island to sample from
+            n: Number of inspirations to sample
+        Returns:
+            List of inspiration programs selected using roulette wheel sampling
+        """
+        inspirations: list[str] = []
+        island_id = island_id % len(self.islands)
+
+        if not island_programs:
+            # Island is empty, fall back to any available programs
+            logger.debug(f"Island {island_id} is empty, sampling inspirations from all programs")
+            for _ in range(n):
+                inspirations.append(self._sample_random_parent().id)
+            return inspirations
+
+        # Clean up stale references
+        valid_programs = [pid for pid in island_programs if pid in self.programs]
+
+        if not valid_programs:
+            logger.warning(
+                f"Island {island_id} has no valid programs, falling back to random sampling"
+            )
+            for _ in range(n):
+                inspirations.append(self._sample_random_parent().id)
+            return inspirations
+
+        # Prepare weights based on fitness scores
+        island_program_objects = [self.programs[pid] for pid in valid_programs]
+        weights: list[float] = []
+        for prog in island_program_objects:
+            fitness = get_fitness_score(prog.metrics, self.config.feature_dimensions)
+            # Add small epsilon to avoid zero weights
+            weights.append(max(fitness, 0.001))
+
+        total_weight = sum(np.exp(weights))
+        if total_weight == 0:
+            weights = [1.0 / len(island_program_objects)] * len(island_program_objects)
+        else:
+            weights = [np.exp(w) / total_weight for w in weights]
+
+        # Sample inspirations based on the softmax weights
+        for _ in range(n):
+            rand_val = random.random()
+            cumulative = 0.0
+            for i, weight in enumerate(weights):
+                cumulative += weight
+                if rand_val <= cumulative:
+                    inspirations.append(island_program_objects[i].id)
+                    break
+            else:
+                inspirations.append(island_program_objects[-1].id)  # Fallback to last program
+
+        return inspirations
+
+    def _sample_from_island_roulette(self, island_id: int) -> Program:
+        """
+        Sample a parent from a specific island using roulette wheel selection
+
+        Args:
+            island_id: The island to sample from
+        Returns:
+            Parent program selected using roulette wheel sampling
+        """
+        island_id = island_id % len(self.islands)
+        island_programs = list(self.islands[island_id])
+
+        if not island_programs:
+            # Island is empty, fall back to any available program
+            logger.debug(f"Island {island_id} is empty, sampling from all programs")
+            return self._sample_random_parent()
+
+        # Select parent from island programs
+        if len(island_programs) == 1:
+            parent_id = island_programs[0]
+        else:
+            # Use roulette wheel selection based on program scores
+            island_program_objects = [
+                self.programs[pid] for pid in island_programs if pid in self.programs
+            ]
+
+            if not island_program_objects:
+                # Fallback if programs not found
+                parent_id = random.choice(island_programs)
+            else:
+                # Calculate cumulative weights based on fitness scores
+                weights: list[float] = []
+                for prog in island_program_objects:
+                    fitness = get_fitness_score(prog.metrics, self.config.feature_dimensions)
+                    # Add small epsilon to avoid zero weights
+                    weights.append(max(fitness, 0.001))
+
+                total_weight = sum(np.exp(weights))
+                if total_weight == 0:
+                    weights = [1.0 / len(island_program_objects)] * len(island_program_objects)
+                else:
+                    weights = [np.exp(w) / total_weight for w in weights]
+
+                # Choose randomly based on the softmax weights
+                rand_val = random.random()
+                cumulative = 0.0
+                for i, weight in enumerate(weights):
+                    cumulative += weight
+                    if rand_val <= cumulative:
+                        parent_id = island_program_objects[i].id
+                        break
+                else:
+                    parent_id = island_program_objects[-1].id  # Fallback to last program
+                
 
         parent = self.programs.get(parent_id)
         if not parent:

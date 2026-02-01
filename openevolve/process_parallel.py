@@ -196,6 +196,8 @@ def _run_iteration_worker(
                     _worker_llm_ensemble.generate_with_context(
                         system_message=prompt["system"],
                         messages=[{"role": "user", "content": prompt["user"]}],
+                        island_unique_models=_worker_config.island_unique_models,
+                        island_id=parent_island,
                     )
                 )
             except Exception as e:
@@ -779,7 +781,7 @@ class ProcessParallelController:
             # Use thread-safe sampling that doesn't modify shared state
             # This fixes the race condition from GitHub issue #246
             parent, inspirations = self.database.sample_from_island(
-                island_id=target_island, num_inspirations=self.config.prompt.num_inspirations
+                island_id=target_island, num_inspirations=self.config.prompt.num_inspirations, roulette_selection=self.config.database.roulette_selection
             )
 
             # Create database snapshot

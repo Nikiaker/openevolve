@@ -62,6 +62,9 @@ class LLMModelConfig:
     # Weight for model in ensemble
     weight: float = 1.0
 
+    # Additional island assignment for distributed evolution
+    island: int = None
+
     # Generation parameters
     system_message: Optional[str] = None
     temperature: float = None
@@ -297,6 +300,7 @@ class DatabaseConfig:
     exploitation_ratio: float = 0.7
     # Note: diversity_metric fixed to "edit_distance"
     diversity_metric: str = "edit_distance"  # Options: "edit_distance", "feature_based"
+    roulette_selection: bool = True # Use roulette-wheel selection based on fitness scores
 
     # Feature map dimensions for MAP-Elites
     # Default to complexity and diversity for better exploration
@@ -390,6 +394,7 @@ class Config:
     random_seed: Optional[int] = 42
     language: str = None
     file_suffix: str = ".py"
+    island_unique_models: bool = True
 
     # Component configurations
     llm: LLMConfig = field(default_factory=LLMConfig)
