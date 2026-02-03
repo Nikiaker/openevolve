@@ -66,8 +66,14 @@ class OpenAILLM(LLMInterface):
     ) -> str:
         """Generate text using a system message and conversational context"""
         # Prepare messages with system message
-        formatted_messages = [{"role": "system", "content": system_message}]
-        formatted_messages.extend(messages)
+        
+        # If the name has 'code' in it there is no system message
+        if "code" in self.model.lower():
+            messages[0]["content"] = system_message + "\n\n" + messages[0]["content"]
+            formatted_messages = messages
+        else:
+            formatted_messages = [{"role": "system", "content": system_message}]
+            formatted_messages.extend(messages)
 
         # Set up generation parameters
         # Define OpenAI reasoning models that require max_completion_tokens
