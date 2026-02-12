@@ -1565,7 +1565,7 @@ class ProgramDatabase:
                 for prog in island_program_objects:
                     fitness = get_fitness_score(prog.metrics, self.config.feature_dimensions)
                     # Add small epsilon to avoid zero weights
-                    weights.append(max(fitness, 0.001))
+                    weights.append(max(fitness, 0.1))
 
                 total_weight = sum(np.exp(weights))
                 if total_weight == 0:
