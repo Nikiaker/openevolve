@@ -777,6 +777,7 @@ class ProcessParallelController:
         try:
             # Use specified island or current island
             target_island = island_id if island_id is not None else self.database.current_island
+            logger.info(f"Submitting iteration {iteration} to island {target_island}")
 
             # Use thread-safe sampling that doesn't modify shared state
             # This fixes the race condition from GitHub issue #246
