@@ -235,7 +235,7 @@ def _run_iteration_worker(
                 if not diff_blocks:
                     wrong_llm_responses.append(llm_response)
                     retries += 1
-                    prompt = get_fix_diff_response_prompt(llm_response)
+                    prompt = get_fix_diff_response_prompt(parent.code, llm_response)
                     # Retry with new prompt
                     continue
 
@@ -317,7 +317,7 @@ def _run_iteration_worker(
                 },
             )
 
-            logger.error(f"LLM generation failed: No valid diffs found in response after 3 attempts")
+            logger.error(f"LLM generation failed: No valid diffs found in response after 4 attempts")
 
             return SerializableResult(
                 child_program_dict=child_program.to_dict(),
@@ -330,7 +330,26 @@ def _run_iteration_worker(
             )
 
         if no_diff_applied and _worker_config.diff_based_evolution:
+            import uuid
+            # Create child program
+            child_program = Program(
+                id=str(uuid.uuid4()),
+                code=parent.code,
+                parent_id=parent.id,
+                generation=parent.generation + 1,
+                iteration_found=iteration,
+                metadata={
+                    "parent_metrics": parent.metrics,
+                    "island": parent_island,
+                },
+            )
+
             return SerializableResult(
+                child_program_dict=child_program.to_dict(),
+                parent_id=parent.id,
+                prompt=prompt,
+                llm_response="\n==========\n".join(wrong_llm_responses),
+                artifacts={"no_changes": "No changes were actually applied"},
                 error="LLM generated code is identical to parent code (no changes applied)",
                 iteration=iteration,
             )
@@ -615,195 +634,207 @@ class ProcessParallelController:
                 if result.error:
                     logger.warning(f"Iteration {completed_iteration} error: {result.error}")
                     failed_programs += 1
+
+                    if result.child_program_dict:
+                        broken_child_program = Program(**result.child_program_dict)
+                        self.database.add_broken(
+                            broken_child_program, 
+                            iteration=completed_iteration)
                 elif result.child_program_dict:
-                    created_programs += 1
                     # Reconstruct program from dict
                     child_program = Program(**result.child_program_dict)
 
-                    # Add to database with explicit target_island to ensure proper island placement
-                    # This fixes issue #391: children should go to the target island, not inherit
-                    # from the parent (which may be from a different island due to fallback sampling)
-                    self.database.add(
-                        child_program,
-                        iteration=completed_iteration,
-                        target_island=result.target_island,
-                    )
-
-                    # Store artifacts
-                    if result.artifacts:
-                        self.database.store_artifacts(child_program.id, result.artifacts)
-
-                    # Log evolution trace
-                    if self.evolution_tracer:
-                        # Retrieve parent program for trace logging
-                        parent_program = (
-                            self.database.get(result.parent_id) if result.parent_id else None
+                    # Check if the same program already exists in the target island
+                    if self.database._check_same_program_exists(child_program, result.target_island):
+                        logger.warning(f"Iteration {completed_iteration}: Duplicate program detected in island {result.target_island}, skipping addition")
+                        failed_programs += 1
+                    else:
+                        # Add to database with explicit target_island to ensure proper island placement
+                        # This fixes issue #391: children should go to the target island, not inherit
+                        # from the parent (which may be from a different island due to fallback sampling)
+                        self.database.add(
+                            child_program,
+                            iteration=completed_iteration,
+                            target_island=result.target_island,
                         )
-                        if parent_program:
-                            # Determine island ID
-                            island_id = child_program.metadata.get(
-                                "island", self.database.current_island
-                            )
 
-                            self.evolution_tracer.log_trace(
-                                iteration=completed_iteration,
-                                parent_program=parent_program,
-                                child_program=child_program,
+                        created_programs += 1
+
+                        # Store artifacts
+                        if result.artifacts:
+                            self.database.store_artifacts(child_program.id, result.artifacts)
+
+                        # Log evolution trace
+                        if self.evolution_tracer:
+                            # Retrieve parent program for trace logging
+                            parent_program = (
+                                self.database.get(result.parent_id) if result.parent_id else None
+                            )
+                            if parent_program:
+                                # Determine island ID
+                                island_id = child_program.metadata.get(
+                                    "island", self.database.current_island
+                                )
+
+                                self.evolution_tracer.log_trace(
+                                    iteration=completed_iteration,
+                                    parent_program=parent_program,
+                                    child_program=child_program,
+                                    prompt=result.prompt,
+                                    llm_response=result.llm_response,
+                                    artifacts=result.artifacts,
+                                    island_id=island_id,
+                                    metadata={
+                                        "iteration_time": result.iteration_time,
+                                        "changes": child_program.metadata.get("changes", ""),
+                                    },
+                                )
+
+                        # Log prompts
+                        if result.prompt:
+                            self.database.log_prompt(
+                                template_key=(
+                                    "full_rewrite_user"
+                                    if not self.config.diff_based_evolution
+                                    else "diff_user"
+                                ),
+                                program_id=child_program.id,
                                 prompt=result.prompt,
-                                llm_response=result.llm_response,
-                                artifacts=result.artifacts,
-                                island_id=island_id,
-                                metadata={
-                                    "iteration_time": result.iteration_time,
-                                    "changes": child_program.metadata.get("changes", ""),
-                                },
+                                responses=[result.llm_response] if result.llm_response else [],
                             )
 
-                    # Log prompts
-                    if result.prompt:
-                        self.database.log_prompt(
-                            template_key=(
-                                "full_rewrite_user"
-                                if not self.config.diff_based_evolution
-                                else "diff_user"
-                            ),
-                            program_id=child_program.id,
-                            prompt=result.prompt,
-                            responses=[result.llm_response] if result.llm_response else [],
+                        # Island management
+                        # get current program island id
+                        island_id = child_program.metadata.get("island", self.database.current_island)
+                        # use this to increment island generation
+                        self.database.increment_island_generation(island_idx=island_id)
+
+                        # Check migration
+                        if self.database.should_migrate():
+                            logger.info(f"Performing migration at iteration {completed_iteration}")
+                            self.database.migrate_programs()
+                            self.database.log_island_status()
+
+                        # Log progress
+                        logger.info(
+                            f"Iteration {completed_iteration}: "
+                            f"Program {child_program.id} "
+                            f"(parent: {result.parent_id}) "
+                            f"completed in {result.iteration_time:.2f}s"
                         )
 
-                    # Island management
-                    # get current program island id
-                    island_id = child_program.metadata.get("island", self.database.current_island)
-                    # use this to increment island generation
-                    self.database.increment_island_generation(island_idx=island_id)
-
-                    # Check migration
-                    if self.database.should_migrate():
-                        logger.info(f"Performing migration at iteration {completed_iteration}")
-                        self.database.migrate_programs()
-                        self.database.log_island_status()
-
-                    # Log progress
-                    logger.info(
-                        f"Iteration {completed_iteration}: "
-                        f"Program {child_program.id} "
-                        f"(parent: {result.parent_id}) "
-                        f"completed in {result.iteration_time:.2f}s"
-                    )
-
-                    if child_program.metrics:
-                        metrics_str = ", ".join(
-                            [
-                                f"{k}={v:.4f}" if isinstance(v, (int, float)) else f"{k}={v}"
-                                for k, v in child_program.metrics.items()
-                            ]
-                        )
-                        logger.info(f"Metrics: {metrics_str}")
-
-                        # Check if this is the first program without combined_score
-                        if not hasattr(self, "_warned_about_combined_score"):
-                            self._warned_about_combined_score = False
-
-                        if (
-                            "combined_score" not in child_program.metrics
-                            and not self._warned_about_combined_score
-                        ):
-                            avg_score = safe_numeric_average(child_program.metrics)
-                            logger.warning(
-                                f"⚠️  No 'combined_score' metric found in evaluation results. "
-                                f"Using average of all numeric metrics ({avg_score:.4f}) for evolution guidance. "
-                                f"For better evolution results, please modify your evaluator to return a 'combined_score' "
-                                f"metric that properly weights different aspects of program performance."
+                        if child_program.metrics:
+                            metrics_str = ", ".join(
+                                [
+                                    f"{k}={v:.4f}" if isinstance(v, (int, float)) else f"{k}={v}"
+                                    for k, v in child_program.metrics.items()
+                                ]
                             )
-                            self._warned_about_combined_score = True
+                            logger.info(f"Metrics: {metrics_str}")
 
-                    # Check for new best
-                    if self.database.best_program_id == child_program.id:
-                        logger.info(
-                            f"🌟 New best solution found at iteration {completed_iteration}: "
-                            f"{child_program.id}"
-                        )
+                            # Check if this is the first program without combined_score
+                            if not hasattr(self, "_warned_about_combined_score"):
+                                self._warned_about_combined_score = False
 
-                    # Checkpoint callback
-                    # Don't checkpoint at iteration 0 (that's just the initial program)
-                    if (
-                        completed_iteration > 0
-                        and completed_iteration % self.config.checkpoint_interval == 0
-                    ):
-                        logger.info(
-                            f"Checkpoint interval reached at iteration {completed_iteration}"
-                        )
-                        self.database.log_island_status()
-                        if checkpoint_callback:
-                            checkpoint_callback(completed_iteration)
+                            if (
+                                "combined_score" not in child_program.metrics
+                                and not self._warned_about_combined_score
+                            ):
+                                avg_score = safe_numeric_average(child_program.metrics)
+                                logger.warning(
+                                    f"⚠️  No 'combined_score' metric found in evaluation results. "
+                                    f"Using average of all numeric metrics ({avg_score:.4f}) for evolution guidance. "
+                                    f"For better evolution results, please modify your evaluator to return a 'combined_score' "
+                                    f"metric that properly weights different aspects of program performance."
+                                )
+                                self._warned_about_combined_score = True
 
-                    # Check target score
-                    if target_score is not None and child_program.metrics:
+                        # Check for new best
+                        if self.database.best_program_id == child_program.id:
+                            logger.info(
+                                f"🌟 New best solution found at iteration {completed_iteration}: "
+                                f"{child_program.id}"
+                            )
+
+                        # Checkpoint callback
+                        # Don't checkpoint at iteration 0 (that's just the initial program)
                         if (
-                            "combined_score" in child_program.metrics
-                            and child_program.metrics["combined_score"] >= target_score
+                            completed_iteration > 0
+                            and completed_iteration % self.config.checkpoint_interval == 0
                         ):
                             logger.info(
-                                f"Target score {target_score} reached at iteration {completed_iteration}"
+                                f"Checkpoint interval reached at iteration {completed_iteration}"
                             )
-                            break
+                            self.database.log_island_status()
+                            if checkpoint_callback:
+                                checkpoint_callback(completed_iteration)
 
-                    # Check early stopping
-                    if early_stopping_enabled and child_program.metrics:
-                        # Get the metric to track for early stopping
-                        current_score = None
-                        if self.config.early_stopping_metric in child_program.metrics:
-                            current_score = child_program.metrics[self.config.early_stopping_metric]
-                        elif self.config.early_stopping_metric == "combined_score":
-                            # Default metric not found, use safe average (standard pattern)
-                            current_score = safe_numeric_average(child_program.metrics)
-                        else:
-                            # User specified a custom metric that doesn't exist
-                            logger.warning(
-                                f"Early stopping metric '{self.config.early_stopping_metric}' not found, using safe numeric average"
-                            )
-                            current_score = safe_numeric_average(child_program.metrics)
+                        # Check target score
+                        if target_score is not None and child_program.metrics:
+                            if (
+                                "combined_score" in child_program.metrics
+                                and child_program.metrics["combined_score"] >= target_score
+                            ):
+                                logger.info(
+                                    f"Target score {target_score} reached at iteration {completed_iteration}"
+                                )
+                                break
 
-                        if current_score is not None and isinstance(current_score, (int, float)):
-                            # Check for improvement
-                            if self.config.early_stopping_patience > 0:
-                                improvement = current_score - best_score
-                                if improvement >= self.config.convergence_threshold:
-                                    best_score = current_score
-                                    iterations_without_improvement = 0
-                                    logger.debug(
-                                        f"New best score: {best_score:.4f} (improvement: {improvement:+.4f})"
-                                    )
-                                else:
-                                    iterations_without_improvement += 1
-                                    logger.debug(
-                                        f"No improvement: {iterations_without_improvement}/{self.config.early_stopping_patience}"
-                                    )
-
-                                # Check if we should stop
-                                if (
-                                    iterations_without_improvement
-                                    >= self.config.early_stopping_patience
-                                ):
-                                    self.early_stopping_triggered = True
-                                    logger.info(
-                                        f"🛑 Early stopping triggered at iteration {completed_iteration}: "
-                                        f"No improvement for {iterations_without_improvement} iterations "
-                                        f"(best score: {best_score:.4f})"
-                                    )
-                                    break
-
+                        # Check early stopping
+                        if early_stopping_enabled and child_program.metrics:
+                            # Get the metric to track for early stopping
+                            current_score = None
+                            if self.config.early_stopping_metric in child_program.metrics:
+                                current_score = child_program.metrics[self.config.early_stopping_metric]
+                            elif self.config.early_stopping_metric == "combined_score":
+                                # Default metric not found, use safe average (standard pattern)
+                                current_score = safe_numeric_average(child_program.metrics)
                             else:
-                                # Event-based early stopping
-                                if current_score == self.config.convergence_threshold:
-                                    best_score = current_score
-                                    logger.info(
-                                        f"🛑 Early stopping (event-based) triggered at iteration {completed_iteration}: "
-                                        f"Task successfully solved with score {best_score:.4f}."
-                                    )
-                                    self.early_stopping_triggered = True
-                                    break
+                                # User specified a custom metric that doesn't exist
+                                logger.warning(
+                                    f"Early stopping metric '{self.config.early_stopping_metric}' not found, using safe numeric average"
+                                )
+                                current_score = safe_numeric_average(child_program.metrics)
+
+                            if current_score is not None and isinstance(current_score, (int, float)):
+                                # Check for improvement
+                                if self.config.early_stopping_patience > 0:
+                                    improvement = current_score - best_score
+                                    if improvement >= self.config.convergence_threshold:
+                                        best_score = current_score
+                                        iterations_without_improvement = 0
+                                        logger.debug(
+                                            f"New best score: {best_score:.4f} (improvement: {improvement:+.4f})"
+                                        )
+                                    else:
+                                        iterations_without_improvement += 1
+                                        logger.debug(
+                                            f"No improvement: {iterations_without_improvement}/{self.config.early_stopping_patience}"
+                                        )
+
+                                    # Check if we should stop
+                                    if (
+                                        iterations_without_improvement
+                                        >= self.config.early_stopping_patience
+                                    ):
+                                        self.early_stopping_triggered = True
+                                        logger.info(
+                                            f"🛑 Early stopping triggered at iteration {completed_iteration}: "
+                                            f"No improvement for {iterations_without_improvement} iterations "
+                                            f"(best score: {best_score:.4f})"
+                                        )
+                                        break
+
+                                else:
+                                    # Event-based early stopping
+                                    if current_score == self.config.convergence_threshold:
+                                        best_score = current_score
+                                        logger.info(
+                                            f"🛑 Early stopping (event-based) triggered at iteration {completed_iteration}: "
+                                            f"Task successfully solved with score {best_score:.4f}."
+                                        )
+                                        self.early_stopping_triggered = True
+                                        break
 
             except FutureTimeoutError:
                 logger.error(

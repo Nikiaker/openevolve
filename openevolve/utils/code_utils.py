@@ -372,7 +372,7 @@ def split_diffs_by_target(
 
     return code_blocks, desc_blocks, unmatched
 
-def get_fix_diff_response_prompt(llm_response: str):
+def get_fix_diff_response_prompt(parent_code: str, llm_response: str):
     return {
         "system": """You are an expert in fixing your collegues code. You know that the code should be in format:
 <<<<<<< SEARCH
@@ -382,7 +382,7 @@ def get_fix_diff_response_prompt(llm_response: str):
 >>>>>>> REPLACE
 Provided the incorrect format of SEARCH/REPLACE fix it to a correct format.
         """,
-        "user": f"An incorrect diff format was detected in this change:\n{llm_response}\nPlease fix it to the correct format."
+        "user": f"The original code was:\n{parent_code}\nAn incorrect diff format was detected in this change:\n{llm_response}\nPlease fix it to the correct format."
     }
 
 def get_fix_no_diff_applied_prompt(parent_code: str, llm_response: str):

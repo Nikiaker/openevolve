@@ -125,6 +125,9 @@ class ProgramDatabase:
         # In-memory program storage
         self.programs: Dict[str, Program] = {}
 
+        # Broken programs. They are not used in evolution, we store them for future analisys
+        self.broken_programs: Dict[str, Program] = {}
+
         # Per-island feature grids for MAP-Elites
         self.island_feature_maps: List[Dict[str, str]] = [{} for _ in range(config.num_islands)]
 
@@ -207,6 +210,30 @@ class ProgramDatabase:
             EmbeddingClient(config.embedding_model) if config.embedding_model else None
         )
         self.similarity_threshold = config.similarity_threshold
+
+    def add_broken(self, broken_program: Program, iteration: int = None):
+        """
+        Add a broken program to the special trash bin list
+
+        Args:
+            broken_program: The program that is considered broken (e.g., failed find diffs)
+            iteration: Current iteration (defaults to last_iteration)
+
+        Returns:
+            Program ID
+        """
+        if iteration is not None:
+            broken_program.iteration_found = iteration
+            # Update last_iteration if needed
+            # self.last_iteration = max(self.last_iteration, iteration)
+
+        self.broken_programs[broken_program.id] = broken_program
+
+        # Save to disk if configured
+        if self.config.db_path:
+            self._save_broken_program(broken_program)
+
+        logger.debug(f"Added broken program {broken_program.id} at iteration {iteration}")
 
     def add(
         self, program: Program, iteration: int = None, target_island: Optional[int] = None
@@ -805,6 +832,25 @@ class ProgramDatabase:
             self.programs[program_id].metadata["island"] = island_idx
 
         logger.info(f"Distributed {len(program_ids)} programs across {len(self.islands)} islands")
+
+    def _save_broken_program(
+        self,
+        broken_program: Program,
+        base_path: Optional[str] = None,
+    ):
+        save_path = base_path or self.config.db_path
+        if not save_path:
+            return
+        
+        # Create broken programs directory if it doesn't exist
+        broken_programs_dir = os.path.join(save_path, "broken_programs")
+        os.makedirs(broken_programs_dir, exist_ok=True)
+
+        # Save broken program
+        program_dict = broken_program.to_dict()
+        program_path = os.path.join(broken_programs_dir, f"{broken_program.id}.json")
+        with open(program_path, "w") as f:
+            json.dump(program_dict, f)
 
     def _save_program(
         self,
@@ -1502,9 +1548,9 @@ class ProgramDatabase:
 
         if not island_programs:
             # Island is empty, fall back to any available programs
-            logger.debug(f"Island {island_id} is empty, sampling inspirations from all programs")
-            for _ in range(n):
-                inspirations.append(self._sample_random_parent().id)
+            logger.debug(f"Island {island_id} is empty, returning nothing")
+            #for _ in range(n):
+            #    inspirations.append(self._sample_random_parent().id)
             return inspirations
 
         # Clean up stale references
@@ -1545,6 +1591,26 @@ class ProgramDatabase:
                 inspirations.append(island_program_objects[-1].id)  # Fallback to last program
 
         return inspirations
+
+    def _check_same_program_exists(self, program: Program, island_id: int) -> bool:
+        """
+        Check if the same program already exists in the specified island
+
+        Args:
+            program: Program to check
+            island_id: Island to check within
+        Returns:
+            True if the same program exists in the island, False otherwise
+        """
+        island_id = island_id % len(self.islands)
+        island_programs = list(self.islands[island_id])
+
+        for pid in island_programs:
+            existing_program = self.programs.get(pid)
+            if existing_program and existing_program.code == program.code:
+                return True
+
+        return False
 
     def _sample_from_island_roulette(self, island_id: int) -> Program:
         """
