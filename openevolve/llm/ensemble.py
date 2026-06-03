@@ -5,7 +5,7 @@ Model ensemble for LLMs
 import asyncio
 import logging
 import random
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from openevolve.llm.base import LLMInterface
 from openevolve.llm.openai import OpenAILLM
@@ -17,8 +17,9 @@ logger = logging.getLogger(__name__)
 class LLMEnsemble:
     """Ensemble of LLMs"""
 
-    def __init__(self, models_cfg: List[LLMModelConfig]):
+    def __init__(self, models_cfg: List[LLMModelConfig], model_schedule: Optional[Dict[str, Any]] = None):
         self.models_cfg = models_cfg
+        self.model_schedule = model_schedule
 
         # Initialize models from the configuration
         self.models = [
@@ -90,20 +91,33 @@ class LLMEnsemble:
             logger._ensemble_logged = True
 
 
-    async def generate(self, prompt: str, **kwargs) -> str:
+    async def generate(self, prompt: str, iteration: Optional[int] = None, **kwargs) -> str:
         """Generate text using a randomly selected model based on weights"""
-        model = self._sample_model()
+        model = self._sample_model(iteration=iteration)
         return await model.generate(prompt, **kwargs)
 
     async def generate_with_context(
-        self, system_message: str, messages: List[Dict[str, str]], island_unique_models: bool, island_id: int | None = None, **kwargs
+        self, system_message: str, messages: List[Dict[str, str]], island_unique_models: bool = False, island_id: int | None = None, iteration: Optional[int] = None, **kwargs
     ) -> str:
         """Generate text using a system message and conversational context"""
-        model = self._sample_model(island_unique_models, island_id)
+        model = self._sample_model(island_unique_models, island_id, iteration)
         return await model.generate_with_context(system_message, messages, **kwargs)
 
-    def _sample_model(self, island_unique_models: bool, island_id: int | None = None) -> LLMInterface:
-        """Sample a model from the ensemble based on weights"""
+    def _sample_model(self, island_unique_models: bool = False, island_id: int | None = None, iteration: Optional[int] = None) -> LLMInterface:
+        """Sample a model from the ensemble based on weights or schedule"""
+        # Check scheduled model selection first
+        if iteration is not None and self.model_schedule:
+            interval = self.model_schedule.get("interval")
+            model_index = self.model_schedule.get("model_index", 0)
+            if interval and iteration > 0 and (iteration == 1 or iteration % interval == 0):
+                if 0 <= model_index < len(self.models):
+                    sampled_model = self.models[model_index]
+                    logger.info(
+                        f"Scheduled model selection at iteration {iteration}: "
+                        f"using {vars(sampled_model)['model']}"
+                    )
+                    return sampled_model
+
         if island_unique_models and island_id is not None:
             island_models: List[LLMInterface] = self.island_models[island_id]
             island_weights = self.island_weights[island_id]

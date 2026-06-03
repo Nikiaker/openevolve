@@ -137,7 +137,10 @@ class OpenEvolve:
             self.config.file_suffix = self.file_extension
 
         # Initialize components
-        self.llm_ensemble = LLMEnsemble(self.config.llm.models)
+        self.llm_ensemble = LLMEnsemble(
+            self.config.llm.models,
+            model_schedule=getattr(self.config.llm, "model_schedule", None),
+        )
         self.llm_evaluator_ensemble = LLMEnsemble(self.config.llm.evaluator_models)
 
         self.prompt_sampler = PromptSampler(self.config.prompt)

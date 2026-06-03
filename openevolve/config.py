@@ -127,6 +127,10 @@ class LLMConfig(LLMModelConfig):
     # Manual mode switch
     manual_mode: bool = False
 
+    # Scheduled model selection: periodically force a specific model
+    # Example: {"interval": 50, "model_index": 0} -> use models[0] every 50 iterations
+    model_schedule: Optional[Dict[str, Any]] = None
+
     def __post_init__(self):
         """Post-initialization to set up model configurations"""
         super().__post_init__()  # Resolve ${VAR} in api_key at LLMConfig level

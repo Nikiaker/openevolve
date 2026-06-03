@@ -104,7 +104,10 @@ def _lazy_init_worker_components():
     if _worker_llm_ensemble is None:
         from openevolve.llm.ensemble import LLMEnsemble
 
-        _worker_llm_ensemble = LLMEnsemble(_worker_config.llm.models)
+        _worker_llm_ensemble = LLMEnsemble(
+            _worker_config.llm.models,
+            model_schedule=getattr(_worker_config.llm, "model_schedule", None),
+        )
 
     if _worker_prompt_sampler is None:
         from openevolve.prompt.sampler import PromptSampler
@@ -209,6 +212,7 @@ def _run_iteration_worker(
                         messages=[{"role": "user", "content": prompt["user"]}],
                         island_unique_models=_worker_config.island_unique_models,
                         island_id=parent_island,
+                        iteration=iteration,
                     )
                 )
             except Exception as e:
@@ -454,6 +458,7 @@ class ProcessParallelController:
                 "timeout": config.llm.timeout,
                 "retries": config.llm.retries,
                 "retry_delay": config.llm.retry_delay,
+                "model_schedule": config.llm.model_schedule,
             },
             "prompt": asdict(config.prompt),
             "database": asdict(config.database),
